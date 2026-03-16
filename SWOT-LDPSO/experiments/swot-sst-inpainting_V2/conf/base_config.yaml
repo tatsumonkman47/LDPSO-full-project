@@ -1,0 +1,111 @@
+# Default configuration for swot-sst-inpainting_V2 experiment
+
+# Resume support
+# Set resume_from_lap to the lap index you want to resume FROM (e.g. 1 means
+# lap 0 completed successfully, resume starting at lap 1).
+# Set resume_runid to the 8-char run ID from a previous run (found in
+# current_runid.txt or in the run folder name like runs/test_run_<runid>_<runid>/).
+# Leave both as null for a fresh start.
+resume_from_lap: null
+resume_runid: null
+
+# SDE configuration
+sde:
+  a: 1e-4
+  b: 1e2
+
+# Model architecture
+model:
+  hid_channels: [128, 256, 384]
+  hid_blocks: [5, 5, 5]
+  kernel_size: [3, 3]
+  emb_features: 256
+  heads:
+    1: 4
+  dropout: 0.1
+  checkpoint_layers: []
+
+# Training settings
+training:
+  epochs: 256
+  batch_size: 160 # Needs to be divisible by number of GPUs?
+  cov_y: 1e-6  # From 1e-4**2
+  fit_samples: 16384    # Number of samples for fit_moments
+  ppca_samples: 16384   # Number of samples for PPCA
+  ppca_rank: 320        # Low-rank dimension for PPCA
+  fit_moments_maxiter: 10
+  fit_moments_method: cg
+  ema_decay: 0.9999
+  heuristic: null
+  sample_interval: 16
+
+# fit_moments settings
+fit_moments:
+  steps: 256
+  rank: 320             # Low-rank dimension for fit_moments
+
+# Optimizer settings
+optimizer:
+  scheduler: constant
+  lr_init: 2e-4
+  lr_end: 1e-6
+  lr_warmup: 0.0
+  optimizer: adam
+  weight_decay: null
+  clip: 1.0
+
+# Generator settings
+generate:
+  method: cg #bicgstab
+  diff_maxiter: 5
+  verbose: false
+  sampler: ddim
+  discrete: 256
+  batch_size: 128
+  tikhonov_min_reg: 1e-5
+  tikhonov_base_reg: 1e-8
+  use_tikhonov: true  # Whether to use Tikhonov regularization
+  tikhonov_warmup_only: false  # Whether to apply Tikhonov only during warmup
+# Weights & Biases settings
+wandb:
+  project: priors-SST-mask
+  tags: []
+
+# Slurm job settings
+slurm:
+  name: swot-sst-inpainting_V2
+  max_jobs: 32
+  dry_run: false
+  dry_run_scheduler: true
+  cpus: 4
+  gpus: 4
+  ram: 128GB
+  time: 1-00:00:00
+  partition: h200
+  singularity: |
+    singularity exec --nv \
+    --bind /opt/slurm:/opt/slurm \
+    --bind /var/run/munge:/var/run/munge \
+    --overlay /scratch/tm3076/singularity_container/EDIT_JAX-cuDNN9.8-overlay-15GB-500K.ext3:ro \
+    /share/apps/images/cuda12.8.1-cudnn9.8.0-ubuntu24.04.2.sif \
+    /bin/bash -c 'export PATH="/opt/slurm/bin:$PATH" && unset XLA_FLAGS && unset CUDA_CACHE_PATH && source /ext3/env.sh &&  {python_command}'
+
+# PBS Pro job settings (NASA Pleiades)
+pbs:
+  name: swot-sst-inpainting_V2
+  max_jobs: 32
+  dry_run: false
+  dry_run_scheduler: true
+  ncpus: 64
+  ngpus: 4
+  model: mil_a100
+  mem: 500gb
+  walltime: "24:00:00"
+  place: "free:excl"
+  queue: gpu_normal@pbspl4
+
+data:
+  # Data source
+  src: /nobackup/tmonkman/priors_precomputed_datasets/precomputed_data_ssh/ssh_swot_nadir
+
+# Experiment configuration

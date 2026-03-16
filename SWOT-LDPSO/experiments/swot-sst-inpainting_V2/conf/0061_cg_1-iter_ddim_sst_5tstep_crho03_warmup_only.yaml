@@ -1,0 +1,45 @@
+defaults:
+  - base_config.yaml
+
+# Training settings
+training:
+  epochs: 256
+
+# Generator settings
+generate:
+  method: cg #bicgstab
+  sampler: ddim
+  discrete: 64
+  diff_maxiter: 3
+  batch_size: 100
+  verbose: False
+  tikhonov_min_reg: 1e-5
+  tikhonov_base_reg: 1e-8
+  tikhonov_warmup_only: true  # Whether to apply Tikhonov only during warmup
+
+slurm:
+  name: 0061_cg_1-iter_ddim_sst_5step_crho03_warmup_only
+  max_jobs: 32
+
+pbs:
+  name: 0061_cg_1-iter_ddim_sst_5step_crho03_warmup_only
+  max_jobs: 32
+  dry_run: false
+  dry_run_scheduler: true
+  ncpus: 64
+  ngpus: 4
+  model: mil_a100
+  mem: 500gb
+  walltime: "24:00:00"
+  walltime_gen: "14:00:00"
+  walltime_train: "12:00:00"
+  place: "free:excl"
+  queue: gpu_normal@pbspl4
+
+data:
+  # Data source
+  src: /nobackup/tmonkman/priors_precomputed_datasets/precomputed_data_sst_timeseries/sst_crho_0.3_t5_squeeze
+  squeeze_channels: true  # Whether to squeeze the time dimension if it exists
+
+
+

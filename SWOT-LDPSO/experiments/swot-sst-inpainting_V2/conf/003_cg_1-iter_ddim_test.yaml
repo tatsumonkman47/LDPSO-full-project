@@ -1,0 +1,19 @@
+defaults:
+  - base_config.yaml
+
+# Training settings
+training:
+  epochs: 256
+
+# Generator settings
+generate:
+  method: cg #bicgstab
+  sampler: ddim
+  discrete: 256
+  diff_maxiter: 3
+  batch_size: 256
+  verbose: True
+
+slurm:
+  name: 003_cg_1-iter_ddim_full_run_with_fallback
+  max_jobs: 32

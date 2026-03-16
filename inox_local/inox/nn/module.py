@@ -1,0 +1,290 @@
+r"""Base modules
+
+In Inox, a module is a PyTree whose branches are its attributes. A branch can be any
+PyTree-compatible object (:py:`bool`, :py:`str`, :py:`list`, :py:`dict`, ...), including
+other modules. Parametric functions, such as neural networks, should subclass
+:class:`Module` and indicate their parameters with :class:`Parameter`.
+
+.. code-block:: python
+
+    import inox
+    import inox.nn as nn
+    import jax
+    import jax.numpy as jnp
+
+    class Linear(nn.Module):
+        def __init__(self, in_features, out_features, key):
+            keys = jax.random.split(key, 2)
+
+            self.weight = nn.Parameter(jax.random.normal(keys[0], (in_features, out_features)))
+            self.bias = nn.Parameter(jax.random.normal(keys[1], (out_features,)))
+
+        def __call__(self, x):
+            return x @ self.weight() + self.bias()
+
+    class Classifier(nn.Module):
+        def __init__(self, in_features, num_classes, key):
+            keys = jax.random.split(key, 3)
+
+            self.l1 = Linear(in_features, 64, key=keys[0])
+            self.l2 = Linear(64, 64, key=keys[1])
+            self.l3 = Linear(64, num_classes, key=keys[2])
+            self.relu = nn.ReLU()
+
+            self.return_logits = True
+
+        def __call__(self, x):
+            x = self.l1(x)
+            x = self.l2(self.relu(x))
+            x = self.l3(self.relu(x))
+
+            if self.return_logits:
+                return x
+            else:
+                return jax.nn.softmax(x)
+
+    key = jax.random.key(0)
+    model = Classifier(16, 3, key)
+"""
+
+from __future__ import annotations
+
+__all__ = [
+    "Module",
+    "ModuleDef",
+    "Parameter",
+    "ComplexParameter",
+]
+
+import jax
+import jax.numpy as jnp
+import jax.tree_util as jtu
+
+from jax import Array
+from typing import Any, Callable, Dict, NamedTuple, Tuple, Union
+
+import inox.tree
+
+
+def is_module(x: Any) -> bool:
+    return isinstance(x, Module)
+
+
+class Module(inox.tree.Namespace):
+    r"""Base class for all modules.
+
+    Arguments:
+        kwargs: A name-value mapping.
+    """
+
+    def train(self, mode: bool = True):
+        r"""Toggles between training and evaluation modes.
+
+        This method is primarily useful for (sub)modules that behave differently at
+        training and evaluation, such as :class:`inox.nn.dropout.TrainingDropout` and
+        :class:`inox.nn.normalization.BatchNorm`.
+
+        Arguments:
+            mode: Whether to turn training mode on or off.
+
+        Example:
+            >>> model = Module(dropout=nn.TrainingDropout())
+            >>> model
+            Module(
+              dropout = TrainingDropout(
+                p = float32[]
+              )
+            )
+            >>> model.train(False)
+            >>> model
+            Module(
+              dropout = TrainingDropout(
+                p = float32[],
+                training = False
+              )
+            )
+        """
+
+        for leaf in jtu.tree_leaves(vars(self), is_module):
+            if is_module(leaf):
+                leaf.train(mode)
+
+        if hasattr(self, "training"):
+            self.training = mode
+
+    def partition(
+        self,
+        *filters: Union[type, Callable[[Any], bool]],
+    ) -> Tuple[ModuleDef, Dict[str, Array]]:
+        r"""Splits the static definition of the module from its arrays.
+
+        The arrays are partitioned into a set of path-array mappings. The mapping in
+        which an array is contained is chosen according to its oldest (closest to the
+        root) ancestor that satisfies a constraint. If a node satisfies several
+        constraints, the first one is selected. The last mapping is dedicated to arrays
+        that do not satisfy any constraint.
+
+        See also:
+            :class:`inox.tree.partition`
+
+        Arguments:
+            filters: A set of filtering constraints. Types are transformed into
+                :py:`isinstance` constraints.
+
+        Returns:
+            The module static definition and array partitions.
+
+        Examples:
+            >>> keys = jax.random.split(jax.random.key(0), 2)
+            >>> model = Module(layers=[
+            ...     nn.Linear(3, 64, key=keys[0]),
+            ...     nn.ReLU(),
+            ...     nn.TrainingDropout(),
+            ...     nn.Linear(64, 5, key=keys[1]),
+            ... ])
+            >>> static, arrays = model.partition()
+            >>> print(inox.tree.prepr(arrays))
+            {
+              '.layers[0].bias.value': float32[64],
+              '.layers[0].weight.value': float32[3, 64],
+              '.layers[2].p': float32[],
+              '.layers[3].bias.value': float32[5],
+              '.layers[3].weight.value': float32[64, 5]
+            }
+
+            >>> static, params, others = model.partition(nn.Parameter)
+            >>> print(inox.tree.prepr(params))
+            {
+              '.layers[0].bias.value': float32[64],
+              '.layers[0].weight.value': float32[3, 64],
+              '.layers[3].bias.value': float32[5],
+              '.layers[3].weight.value': float32[64, 5]
+            }
+            >>> print(inox.tree.prepr(others))
+            {'.layers[2].p': float32[]}
+
+            >>> grads = jax.tree.map(jax.numpy.ones_like, params)
+            >>> params = jax.tree.map(lambda x, y: x + 0.01 * y, params, grads)
+            >>> model = static(params, others)  # updated copy
+
+            >>> model.layers[3].frozen = True
+            >>> filtr = lambda x: getattr(x, 'frozen', False)
+            >>> static, frozen, params, others = model.partition(filtr, nn.Parameter)
+            >>> print(inox.tree.prepr(frozen))
+            {'.layers[3].bias.value': float32[5], '.layers[3].weight.value': float32[64, 5]}
+            >>> print(inox.tree.prepr(params))
+            {'.layers[0].bias.value': float32[64], '.layers[0].weight.value': float32[3, 64]}
+        """
+
+        treedef, *leaves = inox.tree.partition(self, *filters)
+
+        static = {}
+        arrays = [{} for _ in leaves]
+
+        for i, partition in enumerate(leaves):
+            for path, leaf in partition.items():
+                if inox.tree.is_array(leaf):
+                    arrays[i][path] = leaf
+                else:
+                    static[path] = leaf
+
+        return ModuleDef(treedef, static), *arrays
+
+
+class ModuleDef(NamedTuple):
+    r"""Abstraction for the static definition of a module.
+
+    See also:
+        :meth:`Module.partition`
+
+    Arguments:
+        treedef: A module tree definition.
+        leaves: The static (non-array) leaves of the module.
+    """
+
+    treedef: inox.tree.PyTreeDef
+    leaves: Dict[str, Any]
+
+    def __call__(self, *arrays: Dict[str, Array], **kwargs) -> Module:
+        r"""
+        Arguments:
+            arrays: A set of array partitions.
+
+        Returns:
+            A new instance of the module.
+        """
+
+        return inox.tree.combine(self.treedef, self.leaves, *arrays)
+
+
+class Parameter(inox.tree.Namespace):
+    r"""Wrapper to indicate an optimizable array.
+
+    All arrays that require gradient updates in a :class:`Module` should be wrapped in a
+    :class:`Parameter` instance.
+
+    Arguments:
+        value: An array.
+
+    Example:
+        >>> weight = Parameter(jax.numpy.ones((3, 5))); weight
+        Parameter(float32[3, 5])
+        >>> x = jax.random.normal(jax.random.key(0), (16, 3))
+        >>> y = x @ weight()
+    """
+
+    value: Array = None
+
+    def __init__(self, value: Array):
+        self.value = jnp.asarray(value)
+
+    def __call__(self, **kwargs) -> Array:
+        r"""
+        Returns:
+            The wrapped array.
+        """
+
+        return self.value
+
+    def __getattr__(self, attr: str) -> Any:
+        return getattr(self.value, attr)
+
+    def __repr__(self) -> str:
+        return self.tree_repr()
+
+    def tree_repr(self, **kwargs) -> str:
+        return f"{self.__class__.__name__}({inox.tree.prepr(self.value, **kwargs)})"
+
+
+class ComplexParameter(Parameter):
+    r"""Wrapper to indicate an optimizable complex array.
+
+    The real and imaginary parts are stored as separate floating point arrays to enable
+    gradient-based optimization.
+
+    Arguments:
+        value: A complex array.
+
+    Example:
+        >>> value = jax.numpy.ones((3, 5)) + 1j * jax.numpy.zeros((3, 5))
+        >>> weight = ComplexParameter(value); weight
+        ComplexParameter(complex64[3, 5])
+        >>> x = jax.random.normal(jax.random.key(0), (16, 3))
+        >>> y = x @ weight()
+    """
+
+    real: Array = None
+    imag: Array = None
+
+    def __init__(self, value: Array):
+        value = jnp.asarray(value)
+
+        self.real = value.real
+        self.imag = value.imag
+
+    @property
+    def value(self) -> Array:
+        try:
+            return jax.lax.complex(self.real, self.imag)
+        except TypeError:
+            return None
