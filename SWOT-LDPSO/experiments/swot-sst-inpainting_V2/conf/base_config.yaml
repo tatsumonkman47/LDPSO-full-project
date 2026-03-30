@@ -78,10 +78,11 @@ slurm:
   dry_run: false
   dry_run_scheduler: true
   cpus: 4
-  gpus: 4
+  gpus: "h200:4"   # Torch cluster GRES format: gpu:h200:4
   ram: 128GB
-  time: 1-00:00:00
-  partition: h200
+  time: "1-00:00:00"
+  # partition: h200  # Removed — not needed on Torch cluster
+  account: torch_pr_432_general
   singularity: |
     singularity exec --nv \
     --bind /opt/slurm:/opt/slurm \

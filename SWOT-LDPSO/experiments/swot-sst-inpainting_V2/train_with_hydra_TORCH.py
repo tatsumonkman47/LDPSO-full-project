@@ -28,9 +28,9 @@ from priors.optim import Adam, EMA
 from functools import partial
 from tqdm import trange
 from typing import Dict, List, Tuple, Optional, Union, Any, Callable
-from utils import make_model, sample, measure, PATH          # Assumed utility functions (augmentations, flatten, sampling, etc.)
 import zarr # type: ignore
 import time
+from pathlib import Path
 
 def zarr_batch_iterator(array, batch_size, indices=None, drop_last_batch=True):
     N = array.shape[0]
@@ -44,21 +44,19 @@ def zarr_batch_iterator(array, batch_size, indices=None, drop_last_batch=True):
 
 def zarr_generate(model, dataset, rng, batch_size, shape, num_gpus, **kwargs):
     """Generate outputs for a dataset (Zarr or dict of arrays) in batches."""
+    from utils import sample # type: ignore
     # Force eval mode during generation
     original_training = getattr(model, 'training', True)
     model.train(False)
     N = dataset['y'].shape[0]
 
-    # Create a batched sample function using vmap
-    @partial(jax.jit, static_argnums=(0,))
+    # Call sample directly on the batch (sample already handles the batch dim)
     def sample_batch(model_fn, y_batch, A_batch, key_batch):
-        return jax.vmap(lambda y, A, k: sample(model_fn, y, A, k, **kwargs))(
-            y_batch, A_batch, key_batch)
-    
+        return sample(model_fn, y_batch, A_batch, key_batch, **kwargs)
     # Pre-compile on a small batch
-    _ = sample_batch(model, dataset['y'][:16], dataset['A'][:16], 
-                     jax.random.split(rng.split(), 16))
-    
+    _ = sample_batch(model, dataset['y'][:4], dataset['A'][:4], 
+                     rng.split())
+
     # Make batch size a multiple of GPU count for better utilization
     adjusted_batch_size = (batch_size // num_gpus) * num_gpus
     if adjusted_batch_size != batch_size:
@@ -72,28 +70,53 @@ def zarr_generate(model, dataset, rng, batch_size, shape, num_gpus, **kwargs):
         # Extract data for this batch
         y_batch = dataset['y'][start:end]
         A_batch = dataset['A'][start:end]
-        # Generate separate keys for each sample
-        batch_keys = jax.random.split(rng.split(), current_batch_size)
+        
+        # Pad the last batch to be divisible by num_gpus
+        remainder = current_batch_size % num_gpus
+        if remainder != 0:
+            pad_size = num_gpus - remainder
+            # Repeat the last sample to fill the pad
+            y_pad = np.repeat(y_batch[-1:], pad_size, axis=0)
+            A_pad = np.repeat(A_batch[-1:], pad_size, axis=0)
+            y_batch = np.concatenate([y_batch, y_pad], axis=0)
+            A_batch = np.concatenate([A_batch, A_pad], axis=0)
+        
+        # Generate a single key for the batch (not one per sample)
+        batch_key = rng.split()
         # Put data on devices in a sharded manner
         y_batch = jax.device_put(y_batch)
         A_batch = jax.device_put(A_batch)
         # Execute the batch sampling
-        x_batch = sample_batch(model, y_batch, A_batch, batch_keys)
-        # Move results back to host memory
-        xs.append(np.asarray(x_batch))
-        
+        x_batch = sample_batch(model, y_batch, A_batch, batch_key)
+        # Move results back to host memory and trim padding
+        x_batch = np.asarray(x_batch)
+        if remainder != 0:
+            x_batch = x_batch[:current_batch_size]
+        xs.append(x_batch)
+    
     # Combine all batches
     xs = np.concatenate(xs, axis=0)
     model.train(original_training)
     return {'x': xs}
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# Capture the project directory for later use in imports and file paths
+PROJECT_DIR = str(Path(__file__).resolve().parent)
 
 def train(cfg: DictConfig, runid: str, lap: int, src: str):
     """
     Main training loop for a single training 'lap' (iteration).
     Each lap can be seen as one cycle of training, optionally starting from a prior checkpoint.
     """
+    # Ensure the project directory is in the Python path for imports
+    import sys
+    if PROJECT_DIR not in sys.path:
+        sys.path.insert(0, PROJECT_DIR)
+    # Import utilities after setting the path
+    from utils import make_model, sample, measure, PATH
+
+    print(f"Starting Lap {lap} with runid {runid}")
+    
     # Force early logging before ANY JAX operations
     # Initialize Weights & Biases
     start_time = time.time()
@@ -463,7 +486,8 @@ def main(cfg: DictConfig) -> None:
                 gpus=cfg.slurm.gpus,
                 ram=cfg.slurm.ram,
                 time=cfg.slurm.time,
-                partition=cfg.slurm.partition,
+                account=cfg.slurm.account,
+                #partition=cfg.slurm.partition,
                 #delay="00:05:00",
                 #wrap='\"hostname && sleep infinity\"'
            )
@@ -487,10 +511,10 @@ def main(cfg: DictConfig) -> None:
         *jobs,
         name=f'Training {runid}',
         backend='slurm',
-        debug=True,
+        #debug=True,
         export='ALL',
         env=['export WANDB_SILENT=true'],
-        dry_run=False,
+        #dry_run=False,
         singularity=cfg.slurm.singularity
     )
 

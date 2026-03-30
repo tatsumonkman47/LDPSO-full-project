@@ -1,0 +1,72 @@
+defaults:
+  - base_config.yaml
+
+# Training settings
+training:
+  epochs: 256
+  batch_size: 200
+  cov_y: 1e-6  # From 1e-4**2
+  fit_moments_maxiter: 10
+  fit_moments_method: cg
+  ema_decay: 0.9999
+  heuristic: null
+  sample_interval: 16
+
+# Generator settings
+generate:
+  method: cg #bicgstab
+  sampler: ddim
+  discrete: 64
+  diff_maxiter: 3
+  verbose: False
+  batch_size: 128
+  tikhonov_min_reg: 1e-5
+  tikhonov_base_reg: 1e-8
+  tikhonov_warmup_only: true  # Whether to apply Tikhonov only during warmup
+
+slurm:
+  name: 0061_cg_1-iter_ddim_sst_5step_crho03_warmup_only
+  max_jobs: 32
+  dry_run: false
+  dry_run_scheduler: true
+  cpus: 4
+  gpus: "h200:4"   # Torch cluster GRES format: gpu:h200:4
+  ram: 128GB
+  time: "1-00:00:00"
+  # partition: h200
+  account: torch_pr_432_courant
+  # Singularity container command — update overlay and .sif paths for your system
+  singularity: |
+    singularity exec --nv \
+    --bind /opt/slurm:/opt/slurm \
+    --bind /var/run/munge:/var/run/munge \
+    --overlay /scratch/$USER/singularity_container/JAX_overlay-50G-10M.ext3:ro \
+    /share/apps/images/cuda12.8.1-cudnn9.8.0-ubuntu24.04.2.sif \
+    /bin/bash -c 'export PATH="/opt/slurm/bin:$PATH" && unset XLA_FLAGS && unset CUDA_CACHE_PATH && source /ext3/env.sh && conda activate jax_base &&  {python_command}'
+  # Separate walltimes for generation vs training jobs
+  # NOTE: must be quoted — unquoted HH:MM:SS is parsed by YAML as sexagesimal integers
+wandb:
+  project: priors-SST-mask
+  tags: []
+# PBS settings are unused on Torch — kept for reference only
+# pbs:
+#   name: 0061_cg_1-iter_ddim_sst_5step_crho03_warmup_only
+#   max_jobs: 32
+#   dry_run: false
+#   dry_run_scheduler: true
+#   ncpus: 64
+#   ngpus: 4
+#   model: mil_a100
+#   mem: 500gb
+#   walltime: "24:00:00"
+#   place: "free:excl"
+#   queue: gpu_normal@pbspl4
+
+data:
+  # Data source — TODO: update to the correct path on Torch
+  # src: /nobackup/tmonkman/priors_precomputed_datasets/precomputed_data_sst_timeseries/sst_crho_0.3_t5_squeeze
+  src: /scratch/tm3076/priors_precomputed_datasets/precomputed_data_sst_timeseries/sst_crho_0.3_t5_squeeze  # <-- SET THIS to the dataset path on your new HPC system
+  squeeze_channels: true  # Whether to squeeze the time dimension if it exists
+
+
+
