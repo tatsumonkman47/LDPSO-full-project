@@ -309,7 +309,6 @@ class SlurmScheduler(Scheduler):
     backend: str = "slurm"
     translate: Dict[str, str] = {
         "cpus": "cpus-per-task",
-        "gpus": "gpus-per-task",
         "ram": "mem",
         "memory": "mem",
         "timelimit": "time",
@@ -321,6 +320,7 @@ class SlurmScheduler(Scheduler):
         shell: str = os.environ.get("SHELL", "/bin/sh"),
         interpreter: str = "python",
         env: Sequence[str] = [],  # noqa: B006
+        singularity: str = None,
         **kwargs,
     ):
         r"""
@@ -329,6 +329,9 @@ class SlurmScheduler(Scheduler):
             shell: The scripting shell.
             interpreter: The Python interpreter.
             env: A sequence of commands to execute before each job is launched.
+            singularity: An optional singularity exec command template. If provided,
+                the Python command will be wrapped in this singularity invocation.
+                Use ``{python_command}`` as a placeholder for the interpreter + script.
             kwargs: Keyword arguments passed to :class:`Scheduler`.
         """
 
@@ -340,6 +343,7 @@ class SlurmScheduler(Scheduler):
         self.shell = shell
         self.interpreter = interpreter
         self.env = env
+        self.singularity = singularity
 
     @lru_cache(None)  # noqa: B019
     def sacct(self, jobid: str) -> Dict[str, str]:
@@ -464,6 +468,15 @@ class SlurmScheduler(Scheduler):
         lines.append("#SBATCH --ntasks-per-node=1")
 
         for key, value in settings.items():
+            # Special handling for GPUs: emit --gres=gpu:VALUE
+            # This allows values like 4 (becomes gpu:4) or "h200:4" (becomes gpu:h200:4)
+            if key == "gpus":
+                if isinstance(value, int):
+                    lines.append(f"#SBATCH --gres=gpu:{value}")
+                else:
+                    lines.append(f"#SBATCH --gres=gpu:{value}")
+                continue
+
             key = self.translate.get(key, key)
 
             if type(value) is bool:
@@ -527,10 +540,20 @@ class SlurmScheduler(Scheduler):
         else:
             interpreter = job.interpreter
 
+        # Build the python command
         if job.array is None:
-            lines.append(f"srun {interpreter} {pyfile}")
+            python_command = f"{interpreter} {pyfile}"
         else:
-            lines.append(f"srun {interpreter} {pyfile} -i $SLURM_ARRAY_TASK_ID")
+            python_command = f"{interpreter} {pyfile} -i $SLURM_ARRAY_TASK_ID"
+
+        # If using singularity, wrap the python command in the singularity template
+        if self.singularity is not None:
+            # Replace {python_command} placeholder in the singularity template
+            cmd = self.singularity.strip().replace("{python_command}", python_command)
+            # Do NOT use srun with singularity — the container handles execution
+            lines.append(cmd)
+        else:
+            lines.append(f"srun {python_command}")
 
         lines.append("")
 
@@ -541,12 +564,20 @@ class SlurmScheduler(Scheduler):
             f.write("\n".join(lines))
 
         # Submit script
+        # Unset SLURM_CONF so sbatch uses the default search path
+        # (/run/slurm/conf/slurm.conf) instead of the slurmd conf-cache,
+        # which may reference a SlurmUser that doesn't exist in the
+        # current environment (e.g. inside a singularity container).
+        submit_env = os.environ.copy()
+        submit_env.pop("SLURM_CONF", None)
+
         try:
             text = subprocess.run(
                 ["sbatch", "--parsable", str(shfile)],
                 capture_output=True,
                 check=True,
                 text=True,
+                env=submit_env,
             ).stdout
 
             jobid, *_ = text.strip("\n").split(";")  # ignore cluster name

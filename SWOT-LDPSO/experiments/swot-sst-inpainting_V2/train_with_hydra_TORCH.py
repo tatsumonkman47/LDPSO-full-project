@@ -199,6 +199,7 @@ def train(cfg: DictConfig, runid: str, lap: int, src: str):
     # Usage in your main training function:
     if lap > 0:
         checkpoint_path = runpath / f'checkpoint_lap{lap-1:02d}.pkl'
+        print("checkpoint_path",checkpoint_path)
         # Load checkpoint
         with open(checkpoint_path, 'rb') as f:
             checkpoint_data = pickle.load(f)

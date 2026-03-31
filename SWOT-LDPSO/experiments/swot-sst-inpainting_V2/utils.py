@@ -24,11 +24,12 @@ from priors.image import flatten, unflatten
 from priors.common import distribute, sample_any
 from priors.nn import UNet
 
+# Set the output path to scratch if available, otherwise use the current directory
 if 'SCRATCH' in os.environ:
     SCRATCH = os.environ['SCRATCH']
-    PATH = Path(SCRATCH) / 'priors/cifar'
+    PATH = Path(SCRATCH) / 'LDPSO-full-project/SWOT-LDPSO/experiments/swot-sst-inpainting_V2'
 else:
-    PATH = Path('.')
+    PATH = Path(__file__).resolve().parent
 
 PATH.mkdir(parents=True, exist_ok=True)
 
